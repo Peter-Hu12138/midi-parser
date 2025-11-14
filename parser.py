@@ -73,29 +73,26 @@ def parse_midi(file_name: str) -> list[Event]:
                     timestamp += delta_time * tick
                 except UnboundLocalError:
                     timestamp = 0
-                
-                status = int.from_bytes(midi_file.read(1))
-                if status & 0x80 == 0: # running status
-                    # redo reading, this is note!
-                    midi_file.seek(-1, 1)
-                else:
-                    # this is event! assign to status
-                    event_type = status >> 4
-                    channel_number = status & 0xF
-                # temp_status = int.from_bytes(midi_file.read(1))
-                # if temp_status & 0x80 == 0: # running status
-                #     # redo reading, this is note!
-                #     midi_file.seek(-1, 1)
-                #     status = running_status
-                # else:
-                #     # this is event! assign to status
-                #     status = temp_status
-                # event_type = status >> 4
-                # channel_number = status & 0xF
-                # running_status = status
+                try:
+                    next_byte = int.from_bytes(midi_file.peek(1)[:1])
+                    if next_byte & 0x80:
+                        # this is event! assign to status
+                        status = int.from_bytes(midi_file.read(1))
+                    else:
+                        status = running_status
+                except UnboundLocalError:
+                    print()
+                    raise UnboundLocalError("midi file has an invalid running status pattern - having one before any channel event")
+
+                # status is the actual status byte for this event
+                # accounting for running status
+                event_type = status >> 4
+                channel_number = status & 0xF
+            
 
                 # if midi event
                 if event_type != 0xF:
+                    running_status = status
                     match event_type:
                         case 0x8:
                             # note off
@@ -173,10 +170,10 @@ def parse_midi(file_name: str) -> list[Event]:
                             # meta events
                             type = int.from_bytes(midi_file.read(1))
                             meta_event_len = parse_variable_length(midi_file)
-                            if 1 <= type <= 7:
-                                text = midi_file.read(meta_event_len)
-                                print(f"text data:{text}")
                             match type:
+                                case 1 | 2 | 3 | 4 | 5 | 6 | 7:
+                                    text = midi_file.read(meta_event_len)
+                                    print(f"text data:{text}")
                                 case 0x0 | 0x20 | 0x54:
                                     content = midi_file.read(
                                         meta_event_len
@@ -198,7 +195,9 @@ def parse_midi(file_name: str) -> list[Event]:
                                     den = 2 ** int.from_bytes(midi_file.read(1))
                                     clocks = int.from_bytes(midi_file.read(1))
                                     useless = int.from_bytes(midi_file.read(1))
-
+                                case _:
+                                    content = midi_file.read(meta_event_len)
+                                    print(f"unknown meta event with type: {type} and content: {content}")
                         case _:
                             raise ValueError(f"undefined event: {hex(status)}")
             buffer = ((buffer & 0x00ffffff) << 8) + int.from_bytes(midi_file.read(1))
