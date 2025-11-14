@@ -9,8 +9,29 @@ class Event:
     velocity: int
     duration: float
 
+
+@dataclasses.dataclass
+class Channel:
+    instrument: int
+    volume: int
+    ongoing_events: list[Event]
+    closed_events: list[Event]
+
+    def note_on_event(self, start_timestamp: float, pitch: int, velocity: int):
+        evt = Event(start_timestamp, pitch, self.instrument, velocity, -1)
+        self.ongoing_events.append(evt)
+
+    def note_off_event(self, end_timestamp: float, pitch: int):
+        for i in range(len(self.ongoing_events)):
+            evt = self.ongoing_events[i]
+            if evt.pitch == pitch:
+                evt.duration = end_timestamp - evt.timestamp
+                self.closed_events.append(self.ongoing_events.pop(i))
+            return 
+        raise ValueError("unmatched note off event!")
+
 # Pre: pointer of file is right before the variable len to be read
-# Post: the length specified, and pointer just after variable length segment
+# Post: return the length specified, and pointer points at just after variable length segment
 def parse_variable_length(file_obj: _io.BufferedReader) -> int:
     leftmost_byte = int.from_bytes(file_obj.read(1))
     buffer = leftmost_byte & 0x7F
@@ -19,10 +40,13 @@ def parse_variable_length(file_obj: _io.BufferedReader) -> int:
         buffer = buffer << 7 + leftmost_byte & 0x7F
     return buffer
 
+
+
 # Post: the returned list is ordered in chronological order 
 def parse_midi(file_name: str) -> list[Event]:
     # might need to govern channel
-    output = []
+    midi_events = []
+    midi_channels = [Channel(0, 0, [], []) for i in range(16)]
 
     midi_file = open("Columns_Original.mid","rb")
     header_identifier = midi_file.read(4)
@@ -40,50 +64,88 @@ def parse_midi(file_name: str) -> list[Event]:
     while buffer:
         if buffer == 0x4d54726b: # "mtrk"
             # process a chunk
+            timestamp = 0
             track_len = int.from_bytes(midi_file.read(4))
             starting_byte = midi_file.tell()
             while midi_file.tell() - starting_byte < track_len:
                 delta_time = parse_variable_length(midi_file)
+                try:
+                    timestamp += delta_time * tick
+                except UnboundLocalError:
+                    timestamp = 0
+                
                 status = int.from_bytes(midi_file.read(1))
                 if status & 0x80 == 0: # running status
                     # redo reading, this is note!
                     midi_file.seek(-1, 1)
                 else:
-                    # this is event!
+                    # this is event! assign to status
                     event_type = status >> 4
+                    channel_number = status & 0xF
+                # temp_status = int.from_bytes(midi_file.read(1))
+                # if temp_status & 0x80 == 0: # running status
+                #     # redo reading, this is note!
+                #     midi_file.seek(-1, 1)
+                #     status = running_status
+                # else:
+                #     # this is event! assign to status
+                #     status = temp_status
+                # event_type = status >> 4
+                # channel_number = status & 0xF
+                # running_status = status
 
-                
                 # if midi event
                 if event_type != 0xF:
-                    channel_number = status & 0xF
                     match event_type:
                         case 0x8:
                             # note off
                             note = int.from_bytes(midi_file.read(1))
                             velocity = int.from_bytes(midi_file.read(1))
+                            midi_channels[channel_number].note_off_event(timestamp, note)
                         case 0x9:
                             # note on
                             note = int.from_bytes(midi_file.read(1))
                             velocity = int.from_bytes(midi_file.read(1))
+                            if velocity == 0:
+                                try:
+                                    midi_channels[channel_number].note_off_event(timestamp, note)
+                                except ValueError as e:
+                                    print("no match was found", e)
+                            else:
+                                midi_channels[channel_number].note_on_event(timestamp, note, velocity)
                         case 0xA:
                             # polyphonic key pressure
                             note = int.from_bytes(midi_file.read(1))
                             pressure = int.from_bytes(midi_file.read(1))
+                            print(f"ignoring event: polyphonic key pressure note: {note} pressure: {pressure}")
                         case 0xB:
-                            # Code to execute if pattern matches AND condition is true
                             control = int.from_bytes(midi_file.read(1))
                             value = int.from_bytes(midi_file.read(1))
+
+                            print(f"ignoring event: controller: control: {control} value: {value}")
+
+                            match control:
+                                case 100:
+                                    control_lsb = value
+                                case 101:
+                                    control_msb = value
                         case 0xC:
                             # program (intrument change)
                             program = int.from_bytes(midi_file.read(1))
+                            midi_channels[channel_number].instrument = program
+                            print(f"program change to {program}!")
                         case 0xD:
                             # pressure
                             pressure = int.from_bytes(midi_file.read(1))
+                            print(f"ignoring event: cahnnel pressure: {pressure}")
+                            
                         case 0xE:
                             # pitch wheel change
                             lsb = int.from_bytes(midi_file.read(1))
                             msb = int.from_bytes(midi_file.read(1))
                             change = msb << 8 + lsb
+                            print(f"ignoring event: pitch wheel: {change}")
+
                         case _: # Default case (catch-all)
                             # Code to execute if no other patterns match
                             raise ValueError("unexpected event type")
@@ -92,7 +154,7 @@ def parse_midi(file_name: str) -> list[Event]:
                         case 0x0 | 0x7:
                             print("system exclusive event, ignoring due to no implementation")
                             sysex_len = parse_variable_length(midi_file)
-                            midi_file.read(sysex_len)
+                            print("content", midi_file.read(sysex_len))
                         case 0x1:
                             print("unimplemented timing system, ignoring")
                             midi_file.read(1)
@@ -112,7 +174,7 @@ def parse_midi(file_name: str) -> list[Event]:
                             type = int.from_bytes(midi_file.read(1))
                             meta_event_len = parse_variable_length(midi_file)
                             if 1 <= type <= 7:
-                                text = midi_file.read(meta_event_len).decode()
+                                text = midi_file.read(meta_event_len)
                                 print(f"text data:{text}")
                             match type:
                                 case 0x0 | 0x20 | 0x54:
@@ -128,7 +190,8 @@ def parse_midi(file_name: str) -> list[Event]:
                                     # set tempo
                                     tempo = int.from_bytes(
                                         midi_file.read(meta_event_len)
-                                    )
+                                    ) / 1000000
+                                    tick = tempo / divisions
                                 case 0x58:
                                     # time signature
                                     num = int.from_bytes(midi_file.read(1))
@@ -138,13 +201,19 @@ def parse_midi(file_name: str) -> list[Event]:
 
                         case _:
                             raise ValueError(f"undefined event: {hex(status)}")
-            buffer = 0
+            buffer = ((buffer & 0x00ffffff) << 8) + int.from_bytes(midi_file.read(1))
         else:
             buffer = ((buffer & 0x00ffffff) << 8) + int.from_bytes(midi_file.read(1))
+    
+    midi_file.close()
+    return [evt for channel in midi_channels for evt in channel.closed_events]
 
 
 
+lst = parse_midi("Columns_Original.mid")
+srted = sorted(lst, key=lambda e: e.timestamp)
 
-
-parse_midi("Columns_Original.mid")
-
+with open("events.txt", "w") as f:
+    for evnt in srted:
+        f.write(f".word {int(1000 * evnt.timestamp)}, {evnt.pitch}, {int(evnt.duration * 1000)}, {evnt.instrument}\n")
+    print(len(srted))
