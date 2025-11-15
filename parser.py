@@ -8,6 +8,7 @@ class Event:
     instrument: int
     velocity: int
     duration: float
+    volume: int
 
 
 @dataclasses.dataclass
@@ -18,7 +19,7 @@ class Channel:
     closed_events: list[Event]
 
     def note_on_event(self, start_timestamp: float, pitch: int, velocity: int):
-        evt = Event(start_timestamp, pitch, self.instrument, velocity, -1)
+        evt = Event(start_timestamp, pitch, self.instrument, velocity, -1, self.volume)
         self.ongoing_events.append(evt)
 
     def note_off_event(self, end_timestamp: float, pitch: int):
@@ -27,8 +28,30 @@ class Channel:
             if evt.pitch == pitch:
                 evt.duration = end_timestamp - evt.timestamp
                 self.closed_events.append(self.ongoing_events.pop(i))
-            return 
+                return 
         raise ValueError("unmatched note off event!")
+    
+    def pitch_bend(self, pitchbend):
+        sensitivity = 2
+        change = ((pitchbend - 8192) / 8192) * sensitivity
+
+    def set_volume(self, timestamp: float, new_vol: int):
+        self.volume = new_vol
+        for i in range(len(self.ongoing_events)):
+            ongoing_evt = self.ongoing_events.pop(i)
+            ongoing_evt.duration = (timestamp - ongoing_evt.timestamp) + 0.001
+            self.closed_events.append(ongoing_evt)
+            self.ongoing_events.append(Event(
+                timestamp, 
+                ongoing_evt.pitch,
+                self.instrument,
+                ongoing_evt.velocity,
+                -1,
+                self.volume
+                ))
+            
+
+
 
 # Pre: pointer of file is right before the variable len to be read
 # Post: return the length specified, and pointer points at just after variable length segment
@@ -46,9 +69,9 @@ def parse_variable_length(file_obj: _io.BufferedReader) -> int:
 def parse_midi(file_name: str) -> list[Event]:
     # might need to govern channel
     midi_events = []
-    midi_channels = [Channel(0, 0, [], []) for i in range(16)]
+    midi_channels = [Channel(0, 100, [], []) for i in range(16)]
 
-    midi_file = open("Columns_Original.mid","rb")
+    midi_file = open(file_name,"rb")
     header_identifier = midi_file.read(4)
     header_length = int.from_bytes(midi_file.read(4))
     format = int.from_bytes(midi_file.read(2))
@@ -81,7 +104,6 @@ def parse_midi(file_name: str) -> list[Event]:
                     else:
                         status = running_status
                 except UnboundLocalError:
-                    print()
                     raise UnboundLocalError("midi file has an invalid running status pattern - having one before any channel event")
 
                 # status is the actual status byte for this event
@@ -118,14 +140,17 @@ def parse_midi(file_name: str) -> list[Event]:
                         case 0xB:
                             control = int.from_bytes(midi_file.read(1))
                             value = int.from_bytes(midi_file.read(1))
-
-                            print(f"ignoring event: controller: control: {control} value: {value}")
-
                             match control:
+                                case 7:
+                                    midi_channels[channel_number].set_volume(timestamp, value)
+                                    print(f"new volume: {value}")
                                 case 100:
                                     control_lsb = value
                                 case 101:
                                     control_msb = value
+                                case _:
+                                    print(f"ignoring event: controller: control: {control} value: {value}")
+
                         case 0xC:
                             # program (intrument change)
                             program = int.from_bytes(midi_file.read(1))
@@ -138,9 +163,9 @@ def parse_midi(file_name: str) -> list[Event]:
                             
                         case 0xE:
                             # pitch wheel change
-                            lsb = int.from_bytes(midi_file.read(1))
-                            msb = int.from_bytes(midi_file.read(1))
-                            change = msb << 8 + lsb
+                            lsb = int.from_bytes(midi_file.read(1)) & 0x7f
+                            msb = int.from_bytes(midi_file.read(1)) & 0x7f
+                            change = msb << 7 + lsb
                             print(f"ignoring event: pitch wheel: {change}")
 
                         case _: # Default case (catch-all)
@@ -205,6 +230,7 @@ def parse_midi(file_name: str) -> list[Event]:
             buffer = ((buffer & 0x00ffffff) << 8) + int.from_bytes(midi_file.read(1))
     
     midi_file.close()
+    print(f"number of unclosed events: {sum([len(channel.ongoing_events) for channel in midi_channels])}")
     return [evt for channel in midi_channels for evt in channel.closed_events]
 
 
@@ -212,7 +238,7 @@ def parse_midi(file_name: str) -> list[Event]:
 lst = parse_midi("Columns_Original.mid")
 srted = sorted(lst, key=lambda e: e.timestamp)
 
-with open("events.txt", "w") as f:
+with open("Columns_Original.txt", "w") as f:
     for evnt in srted:
-        f.write(f".word {int(1000 * evnt.timestamp)}, {evnt.pitch}, {int(evnt.duration * 1000)}, {evnt.instrument}\n")
+        f.write(f".word {int(1000 * evnt.timestamp)}, {evnt.pitch}, {int(evnt.duration * 1000)}, {evnt.instrument}, {evnt.volume}\n")
     print(len(srted))
