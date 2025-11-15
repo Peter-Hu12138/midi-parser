@@ -231,14 +231,13 @@ def parse_midi(file_name: str) -> list[Event]:
     
     midi_file.close()
     print(f"number of unclosed events: {sum([len(channel.ongoing_events) for channel in midi_channels])}")
-    return [evt for channel in midi_channels for evt in channel.closed_events]
+    return sorted([evt for channel in midi_channels for evt in channel.closed_events],  key=lambda e: e.timestamp)
 
 
 
 lst = parse_midi("Columns_Original.mid")
-srted = sorted(lst, key=lambda e: e.timestamp)
 
 with open("Columns_Original.txt", "w") as f:
-    for evnt in srted:
+    for evnt in lst:
         f.write(f".word {int(1000 * evnt.timestamp)}, {evnt.pitch}, {int(evnt.duration * 1000)}, {evnt.instrument}, {evnt.volume}\n")
-    print(len(srted))
+    print(len(lst))
