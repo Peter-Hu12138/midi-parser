@@ -64,8 +64,8 @@ def parse_variable_length(file_obj: _io.BufferedReader) -> int:
     return buffer
 
 
-
-# Post: the returned list is ordered in chronological order 
+# Pre: file_name is a directory to a midi file
+# Post: the returned list is parsed midi file ordered in chronological order 
 def parse_midi(file_name: str) -> list[Event]:
     # might need to govern channel
     midi_events = []
@@ -234,10 +234,10 @@ def parse_midi(file_name: str) -> list[Event]:
     return sorted([evt for channel in midi_channels for evt in channel.closed_events],  key=lambda e: e.timestamp)
 
 
+if __name__ == "__main__":
+    lst = parse_midi("Columns_Original.mid")
 
-lst = parse_midi("Columns_Original.mid")
-
-with open("Columns_Original.txt", "w") as f:
-    for evnt in lst:
-        f.write(f".word {int(1000 * evnt.timestamp)}, {evnt.pitch}, {int(evnt.duration * 1000)}, {evnt.instrument}, {evnt.volume}\n")
-    print(len(lst))
+    with open("Columns_Original.txt", "w") as f:
+        for evnt in lst:
+            f.write(f".word {int(1000 * evnt.timestamp)}, {evnt.pitch}, {int(evnt.duration * 1000)}, {evnt.instrument}, {evnt.volume}\n")
+        print(len(lst))
