@@ -42,7 +42,7 @@ class Channel:
             ongoing_evt.duration = (timestamp - ongoing_evt.timestamp) + 0.001
             self.closed_events.append(ongoing_evt)
             self.ongoing_events.append(Event(
-                timestamp, 
+                timestamp,
                 ongoing_evt.pitch,
                 self.instrument,
                 ongoing_evt.velocity,
@@ -58,9 +58,9 @@ class Channel:
 def parse_variable_length(file_obj: _io.BufferedReader) -> int:
     leftmost_byte = int.from_bytes(file_obj.read(1))
     buffer = leftmost_byte & 0x7F
-    while leftmost_byte >> 7 == 1:
+    while (leftmost_byte & 0x80) != 0:
         leftmost_byte = int.from_bytes(file_obj.read(1))
-        buffer = buffer << 7 + leftmost_byte & 0x7F
+        buffer = (buffer << 7) | (leftmost_byte & 0x7F)
     return buffer
 
 
@@ -70,15 +70,16 @@ def parse_midi(file_name: str) -> list[Event]:
     # might need to govern channel
     midi_events = []
     midi_channels = [Channel(0, 100, [], []) for i in range(16)]
-
+    num_tracks = 0
     midi_file = open(file_name,"rb")
     header_identifier = midi_file.read(4)
     header_length = int.from_bytes(midi_file.read(4))
     format = int.from_bytes(midi_file.read(2))
     num_tracks = int.from_bytes(midi_file.read(2))
-    divisions = int.from_bytes(midi_file.read(2))
+    divisions = int.from_bytes(midi_file.read(2)) & 0x7F
+    tempo = 500000 
 
-    if divisions >> 7 == 1:
+    if divisions & 0x80000 == 1:
         raise ValueError("SMPTE timing not supported")
     if format == 2:
         raise ValueError("multiple song file format not supported")
@@ -86,14 +87,17 @@ def parse_midi(file_name: str) -> list[Event]:
     buffer = int.from_bytes(midi_file.read(4))
     while buffer:
         if buffer == 0x4d54726b: # "mtrk"
+            num_tracks += 1
             # process a chunk
             timestamp = 0
             track_len = int.from_bytes(midi_file.read(4))
             starting_byte = midi_file.tell()
+            ticks_passed = 0
             while midi_file.tell() - starting_byte < track_len:
                 delta_time = parse_variable_length(midi_file)
+                ticks_passed += delta_time
                 try:
-                    timestamp += delta_time * tick
+                    timestamp = ticks_passed * tempo / 1000000.0 / divisions
                 except UnboundLocalError:
                     timestamp = 0
                 try:
@@ -126,10 +130,7 @@ def parse_midi(file_name: str) -> list[Event]:
                             note = int.from_bytes(midi_file.read(1))
                             velocity = int.from_bytes(midi_file.read(1))
                             if velocity == 0:
-                                try:
-                                    midi_channels[channel_number].note_off_event(timestamp, note)
-                                except ValueError as e:
-                                    print("no match was found", e)
+                                midi_channels[channel_number].note_off_event(timestamp, note)
                             else:
                                 midi_channels[channel_number].note_on_event(timestamp, note, velocity)
                         case 0xA:
@@ -142,7 +143,7 @@ def parse_midi(file_name: str) -> list[Event]:
                             value = int.from_bytes(midi_file.read(1))
                             match control:
                                 case 7:
-                                    midi_channels[channel_number].set_volume(timestamp, value)
+                                    # midi_channels[channel_number].set_volume(timestamp, value)
                                     print(f"new volume: {value}")
                                 case 100:
                                     control_lsb = value
@@ -212,8 +213,7 @@ def parse_midi(file_name: str) -> list[Event]:
                                     # set tempo
                                     tempo = int.from_bytes(
                                         midi_file.read(meta_event_len)
-                                    ) / 1000000
-                                    tick = tempo / divisions
+                                    )
                                 case 0x58:
                                     # time signature
                                     num = int.from_bytes(midi_file.read(1))
@@ -230,6 +230,7 @@ def parse_midi(file_name: str) -> list[Event]:
             buffer = ((buffer & 0x00ffffff) << 8) + int.from_bytes(midi_file.read(1))
     
     midi_file.close()
+    print(f"number of tracks: {num_tracks}")
     print(f"number of unclosed events: {sum([len(channel.ongoing_events) for channel in midi_channels])}")
     return sorted([evt for channel in midi_channels for evt in channel.closed_events],  key=lambda e: e.timestamp)
 
